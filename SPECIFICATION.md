@@ -4,13 +4,14 @@ Mathias Buus (@mafintosh). December 10th, 2015.
 
 ## DRAFT Version 0
 
-A design and specification document for Hyperdrive. Hyperdrive is a protocol and network for distributing and replicating static feeds of binary data. It is meant to serve as the main file and data distribution layer for [dat](https://dat-data.com) and is being developed by the same team.
+A design and specification document for Hyperdrive. Hyperdrive is a protocol and network for distributing and replicating feeds of binary data. It is meant to serve as the main file and data distribution layer for [dat](https://dat-data.com) and is being developed by the same team.
 
 The protocol itself draws heavy inspiration from existing file sharing systems such as BitTorrent and [ppspp](https://tools.ietf.org/html/rfc7574)
 
 ## Goals
 
-The goals of hyperdrive is to distribute static feeds of binary data to a swarm of peers in an as efficient as possible way.
+The goals of hyperdrive is to distribute feeds of binary data to a swarm of peers in an as efficient as possible way.
+
 It uses merkle trees to verify and deduplicate content so that if you share the same file twice it'll only have to downloaded one time. Merkle trees also allows for partial deduplication so if you make changes to a file only the changes and a small overhead of data will have to be replicated.
 
 A core goal is to be as simple and pragmatic as possible. This allows for easier implementations of clients which is an often overlooked property when implementing distributed systems. First class browser support is also an important goal as p2p data sharing in browsers is becoming more viable every day as WebRTC matures.
@@ -21,19 +22,21 @@ Prioritized synchronization of parts of a feed is also at the heart of hyperdriv
 
 ## Overview
 
-As mentioned above hyperdrive distributes static feeds of binary data (blocks). A static feed is a series of related blocks of binary data that are identified by an incrementing number starting at 0.
+As mentioned above hyperdrive distributes feeds of binary data (blocks). A *static feed* is a series of `n` related blocks of binary data that are identified by an incrementing number starting at 0.
 
 ```
-// a feed with n blocks of data
+// a static feed with n blocks of data
 
 block #0, block #1, block #3, block #4, ..., block #n
 ```
 
 These binary blocks of data can be of any reasonable size (strictly speaking they just have to fit in memory but implementations can choose to limit the max size to a more manageable number) and they don't all have to be the same fixed size. A static feed is identified by a hash of the roots of the the merkle trees it spans which means that a feed id (or link) is uniquely identified by it's content. See the "Content Integrity" section for a description on how these merkle trees are generated and the feed id is calculated.
 
+A dynamic feed is like a static feed, but new blocks of data can be appended to a dynamic feed over time. Each dynamic feed is associated with a cryptographic key pair: only the owner of the private key can update a dynamic feed, but anyone with the public key can verify the authenticity of dynamic feed content. In fact, a dynamic feed is really only an updateable pointer to a point in a static feed.
+
 ## Content Integrity
 
-When downloading a feed, a peer must easily and efficiently verify that it has received the correct data. To do this, hyperdrive produces a single hash that summarizes the feed up to the `n`th block. By using Merkle trees, hyperdrive allows users to verify data without requiring that the user download the whole feed.
+When downloading a static feed, a peer must easily and efficiently verify that it has received the correct data. To do this, hyperdrive produces a single hash that summarizes the feed up to the `n`th block. By using Merkle trees, hyperdrive allows users to verify data without requiring that the user download the whole feed.
 
 Given a feed with `n` blocks we can generate a series of merkle trees that guarantee the integrity of our feed when distributing it to untrusted peers.
 
@@ -135,7 +138,7 @@ Hyperdrive's content integrity approach is similar to parts of [ppspp](https://t
 
 ## Deduplication
 
-Assuming you have two different feeds that are sharing similar data, we want to minimize fetching of duplicate data. The merkle tree structure helps us achieve this by content addressing the feeds.
+Assuming you have two different static feeds that are sharing similar data, we want to minimize fetching of duplicate data. The merkle tree structure helps us achieve this by content addressing the feeds.
 
 For example if we were to produce the exact same feed on two different computers using the technique [described in the **Content Integrity** section](#content-integrity), the feeds would end up with the same root tree hashes and the same feed id. The two feeds would therefore be the same feed.
 
@@ -169,6 +172,16 @@ It should be noted that this means that we might still download redundant data s
 ```
 
 Another consequence of this is the no round trips are wasted. Using only a single round trip we will always receive data and additional information that helps us deduplicate other parts of the same feed as an optimization.
+
+## Dynamic Feeds
+
+The id of a static feed refers to a specific point in that static feed; updating the content of a static feed will produce a new id. By contrast, a dynamic feed always keeps the same id, but new content can be added to it over time. Each dynamic feed corresponds to a cryptographic key pair. Only the owner of the private key can update a dynamic feed, but anyone with the public key can verify an update to the feed.
+
+The id of a dynamic feed is a public key. When broadcasting an update of a dynamic feed, the owner of the node sends a message containing a link to a static feed and an incrementing sequence number. The message is signed with the private key for the feed.
+
+When exchanging a dynamic feed, two nodes share their data about the feed. Whichever message is valid and has the highest sequence number will be accepted as the new value for that feed.
+
+A dynamic feed only allows content to be appended, not removed or edited. That is, if the owner of the feed broadcasts an update containing `block 0, block 1, ..., block n`, then all future updates to that feed must refer to a static feed that begins with blocks `0...n`. This makes a dynamic feed an append-only log store.
 
 ## Wire Protocol
 
@@ -349,9 +362,25 @@ Should be sent to cancel a previously sent request.
 
 `block` should be set to the same block index as the request you want to cancel.
 
+#### dynamic
+
+A dynamic message has type `8` and the following schema
+
+``` proto
+message dynamic {
+  required uint64 channel = 1;
+  required uint64 pubkey = 2;
+  required sequence = 3;
+  optional hash = 4;
+  optional signature = 5;
+}
+```
+
+This message serves as a request for the update of a dynamic feed, as well as a way for sending updates to a dynamic feed. The pubkey identifies the dynamic feed. The sequence number is the local sequence number. The hash is the id of a static feed. The signature is a concatenation of the sequence number and the hash, signed by the public key.
+
 ## Downloading / uploading flow
 
-Lets assume we receive a feed id through an external channel (such as text message or IM). To start downloading and sharing this feed we first need to find some peers sharing it. This could be accomplished in many ways. The way the javascript implementation encourages this is using another [dat](https://dat-data.com) developed module for peer discovery called [discovery-channel](https://github.com/maxogden/discovery-channel) that uses multicast-dns and the bittorrent dht to announce and lookup peers from a key.
+Lets assume we receive a static feed id through an external channel (such as text message or IM). To start downloading and sharing this feed we first need to find some peers sharing it. This could be accomplished in many ways. The way the javascript implementation encourages this is using another [dat](https://dat-data.com) developed module for peer discovery called [discovery-channel](https://github.com/maxogden/discovery-channel) that uses multicast-dns and the bittorrent dht to announce and lookup peers from a key.
 
 Once we are connected to a swarm of peers we need to decide which peers we want to allow requesting data from us.
 This is where the pausing messages become useful. All channels start out paused and it is up to the sending peer to unpause a remote peer when it is ready to accept requests. When to unpause a peer can depend on a lot of different parameters and multiple strategies exists for this. The Hyperdrive javascript implementation currently uses a tit-for-tat and optimistic unpausing based strategy similar to the one used in BitTorrent.
@@ -377,6 +406,18 @@ if (critical-range) {
   }
 }
 ```
+
+## Dynamic feed update flow
+
+Dynamic feeds may be exchanged by push or pull mechanisms. A feed may be requested, or the originator of a feed may proactively broadcast updates to the dynamic feed when it makes them.
+
+In the case of requesting a dynamic feed, if a node doesn't have any data from the dynamic feed, it sends a `dynamic` message where the sequence number is `0`, and the hash and signature are omitted. If it has data, it sends a `dynamic` message containing its own copy of the state of the feed.
+
+When a peer receives a `dynamic` message, first it compares the sequence number received with its own local sequence number. If they are the same, it can ignore the message.
+
+If the received sequence number is smaller than the local one, the local node has a newer copy of the dynamic feed state than the remote node. The local node may respond with another `dynamic` message to tell the remote about the new state of the feed.
+
+If the received sequence number is larger than the local one, the remote has a newer copy of the dynamic feed. First, the node validates the message by checking that the signature is valid. Then, it may check that the feed referred to by the new message is a strict superset of our local copy (this would only be useful if we're worried about the owner sabotaging their own feed). If the received sequence number passes this validation, we accept it as our own local state of the feed.
 
 ## File sharing
 
