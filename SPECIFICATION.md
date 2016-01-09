@@ -33,6 +33,8 @@ These binary blocks of data can be of any reasonable size (strictly speaking the
 
 ## Content Integrity
 
+When downloading a feed, a peer must easily and efficiently verify that it has received the correct data. To do this, hyperdrive produces a single hash that summarizes the feed up to the `n`th block. By using Merkle trees, hyperdrive allows users to verify data without requiring that the user download the whole feed.
+
 Given a feed with `n` blocks we can generate a series of merkle trees that guarantee the integrity of our feed when distributing it to untrusted peers.
 
 For every block, hash it with a cryptographic hash function (draft 0 uses sha256), prefixed with the type identifier `0` to indicate that this is a block hash.
@@ -46,18 +48,20 @@ var blockHash = crypto.createHash('sha256')
   .digest()
 ```
 
-Hyperdrive uses a [flat-tree](https://github.com/mafintosh/flat-tree) to represent a tree structure as a flat list.
+Hyperdrive uses a [flat-tree](https://github.com/mafintosh/flat-tree) to represent a series of trees as a flat list.
 
 ```
 // a flat tree representing six blocks (the even numbers)
-// and two roots, 3 and 9
+// In this case, there are two Merkle trees, with roots at 3 and 9
 
-      3
-  1       5       9
-0   2   4   6   8  10
+                    3
+                1       5       9
+Tree index:   0   2   4   6   8  10
+
+Block index:  0   1   2   3   4   5
 ```
 
-This means that every block hash will be identified by `2 * blockIndex` in the flat tree structure as they are bottom nodes. Every odd numbered index is the parent of two children. In the above example `1` would be the parent of `0` and `2`, `5` would be parent of `4` and `6`, and `3` would be the parent of `1` and `5`. Note that `7` cannot be resolved as it would require `12` and `14` be be present as well.
+This means that every block hash will be identified by `2 * blockIndex` in the flat tree structure as they are bottom nodes. Every odd numbered index is the parent of two children. In the above example `1` would be the parent of `0` and `2`, `5` would be parent of `4` and `6`, and `3` would be the parent of `1` and `5`. Note that `7` cannot be resolved as it would require `12` and `14` to be present as well.
 
 To calculate the value of a parent node (odd numbered) we need to hash the values of the left and right child prefixed with the type identifier `1`.
 
@@ -71,7 +75,7 @@ var parentHash = crypto.createHash('sha256')
   .digest()
 ```
 
-The type prefixing is to make sure a parent hash cannot pretend to be a block hash.
+The type prefixing is to make sure a block hash cannot pretend to be a parent hash (a ["Second preimage attack"](https://en.wikipedia.org/wiki/Merkle_tree#Second_preimage_attack)).
 
 Unless the feed contains a strict power of 2 number of blocks, we will end up with more than 1 root hashes when we are building this data structure.
 To turn these hashes into the feed id simply do the following. Hash all the roots prefixed with the type identifier `2`, left to right, with the hash values and a uint64 big endian representation of the parent index.
@@ -104,9 +108,11 @@ For example, using the above example feed with 6 blocks, assuming we have alread
 ```
 // we need 6, the sibling and 1, the uncle
 
-        3
-  (1)       5
-0     2   4   (6)
+                   3
+               (1)          5
+Tree index:  0     2     4    (6)
+
+Block #:     0     1     2     3
 ```
 
 We also need the content for block #2 of course. Given these values we can verify the block by doing the following
@@ -121,7 +127,7 @@ If parent3 is equal to the root at tree index 3 (that we already trust) we now k
 
 If we had received the hash for tree index 5 before and verified it then we would not need to re-verify the root and we would be able to insert block #2 after validating parent5.
 
-It should be noted that this allows us to have random access to any block in the feed with content verification in a single round trip
+It should be noted that this allows us to have random access to any block in the feed with content verification in a single round trip. In the worst case, verifying the a single block requires only `O(log(N))` time with respect to the number of blocks in the feed.
 
 As an optimization we can use the remote's "have" messages (see the ["Wire Protocol" section](#messageshave)) to figure out which hashes it already has. For example if the remote has block #3 then we do not need to send any hashes since it will already have verified hash 6 and 5.
 
@@ -267,7 +273,7 @@ message Pause {
 Should be sent if you want to pause a channel.
 
 If you are pausing a channel you are indicating to the remote that you will not accept any requests.
-All channels should start out paused so you should only send this if you've previously sent an `unpause` message.
+All channels should start out paused so you should only send this if you've previously sent an `unpause` message. Note that pausing is a one-way relationship: when you're pausing a remote, the remote might not be pausing you.
 
 #### messages.Unpause
 
