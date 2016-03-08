@@ -32,3 +32,16 @@ tape('select file', function (t) {
   var p2 = driveClone.createPeerStream()
   p1.pipe(p2).pipe(p1)
 })
+
+tape('filename is relative path', function (t) {
+  var drive = hyperdrive(memdb())
+
+  var tmpDir = os.tmpdir()
+
+  var archive = drive.add(tmpDir)
+
+  archive.appendFile('./README.md', function (err) {
+    t.error(err, 'no error')
+    t.end()
+  })
+})
